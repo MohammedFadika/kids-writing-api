@@ -28,4 +28,9 @@ venv.bak/
 
 # Generated files
 *.log
-*.txt 
+test_image.txt
+happy_image.txt
+sad_image.txt
+
+# Do NOT ignore requirements.txt
+!requirements.txt 
