@@ -9,6 +9,7 @@ import traceback
 import requests
 from io import BytesIO
 import torch
+import re
 from transformers import RobertaForSequenceClassification, RobertaTokenizer
 
 app = Flask(__name__)
@@ -49,6 +50,41 @@ SAMPLE_RESPONSES = {
     }
 }
 
+# Enhanced emotion keyword dictionaries with weighted scoring
+EMOTION_KEYWORDS = {
+    "joy": {
+        "high": ["thrilled", "ecstatic", "overjoyed", "elated", "delighted", "exciting", "wonderful", "amazing", "fantastic", "awesome", "incredible", "love"],
+        "medium": ["happy", "glad", "cheerful", "pleased", "content", "fun", "enjoyed", "joy", "smile", "laughed", "great", "good", "positive", "lucky"],
+        "low": ["nice", "fine", "okay", "alright", "satisfied", "playful", "friendly", "peaceful"]
+    },
+    "sadness": {
+        "high": ["devastated", "heartbroken", "miserable", "depressed", "grief", "tragic", "awful", "terrible", "horrible", "crying", "sobbing", "despair"],
+        "medium": ["sad", "unhappy", "disappointed", "upset", "hurt", "lonely", "missing", "sorry", "regret", "gloomy", "blue", "lost"],
+        "low": ["down", "troubled", "bothered", "uncomfortable", "tired", "confused", "uncertain", "meh", "sigh"]
+    },
+    "anger": {
+        "high": ["furious", "enraged", "outraged", "livid", "hate", "despise", "disgusted", "horrified", "violent", "exploded", "screaming", "yelling"],
+        "medium": ["angry", "mad", "annoyed", "frustrated", "irritated", "bothered", "complained", "unfair", "broke", "ruined", "destroyed"],
+        "low": ["bothered", "displeased", "grumpy", "bothered", "unimpressed", "impatient", "argued", "disagreed"]
+    },
+    "fear": {
+        "high": ["terrified", "panicked", "horrified", "petrified", "nightmare", "dreadful", "scared", "paranoid", "traumatic", "paralyzed", "frozen"],
+        "medium": ["afraid", "frightened", "anxious", "worried", "nervous", "fearful", "uneasy", "timid", "shaking", "trembling", "alarmed"],
+        "low": ["concerned", "unsure", "doubtful", "shy", "hesitant", "careful", "uncomfortable", "suspicious", "strange", "dark"]
+    }
+}
+
+# Negation words that can reverse emotion meaning
+NEGATION_WORDS = ["not", "no", "never", "don't", "can't", "couldn't", "wouldn't", "didn't", "isn't", 
+                  "aren't", "wasn't", "weren't", "haven't", "hasn't", "hadn't", "shouldn't", "won't"]
+
+# Intensifiers that can strengthen emotions
+INTENSIFIERS = ["very", "really", "extremely", "incredibly", "absolutely", "completely", "totally", 
+                "deeply", "terribly", "awfully", "super", "so", "too", "quite", "especially"]
+
+# Amplifying punctuation patterns
+EMPHASIS_PATTERNS = [r'!+', r'\?!+', r'\?{2,}', r'\.{3,}', r'[A-Z]{2,}']
+
 # Create a simple text file to serve as our test image
 def create_test_file():
     with open(os.path.join(BASE_DIR, "test_image.txt"), "w") as f:
@@ -63,37 +99,148 @@ def create_test_file():
         f.write("This is a sad image placeholder")
 
 # Load the RoBERTa model for emotion detection
+use_keyword_fallback = False
 try:
     print("Loading RoBERTa model for emotion detection from Hugging Face Hub...")
-    emotion_model = RobertaForSequenceClassification.from_pretrained(EMOTION_MODEL_ID)
+    # Load with memory-efficient settings for deployment environments
+    config = {'torchscript': True, 'low_cpu_mem_usage': True}
+    
+    # Attempt to load with memory optimizations
+    emotion_model = RobertaForSequenceClassification.from_pretrained(
+        EMOTION_MODEL_ID, 
+        torchscript=True,
+        low_cpu_mem_usage=True
+    )
     emotion_tokenizer = RobertaTokenizer.from_pretrained(EMOTION_MODEL_ID)
     print("RoBERTa model loaded successfully!")
+    use_keyword_fallback = False
     
-    def detect_emotions(text):
-        """Detect emotions using the fine-tuned RoBERTa model"""
-        encoding = emotion_tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
-        with torch.no_grad():
-            output = emotion_model(**encoding)
-        predictions = torch.sigmoid(output.logits)
-        predictions = predictions > 0.5  # Threshold to get 0 or 1 for each emotion
-        emotion_columns = ["anger", "fear", "sadness", "joy"]  # The emotions our model was trained on
-        predicted_emotions = dict(zip(emotion_columns, predictions.squeeze().tolist()))
-        return predicted_emotions
-        
 except Exception as e:
     print(f"Error loading RoBERTa model from Hugging Face Hub: {e}")
-    print("Falling back to simple keyword-based emotion detection")
+    print("Falling back to enhanced linguistic analysis for emotion detection")
+    use_keyword_fallback = True
+
+def detect_emotions(text):
+    """Detect emotions from text"""
+    if not use_keyword_fallback:
+        try:
+            # Try using the fine-tuned model
+            encoding = emotion_tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
+            with torch.no_grad():
+                output = emotion_model(**encoding)
+            predictions = torch.sigmoid(output.logits)
+            predictions = predictions > 0.5  # Threshold to get 0 or 1 for each emotion
+            emotion_columns = ["anger", "fear", "sadness", "joy"]  # The emotions our model was trained on
+            predicted_emotions = dict(zip(emotion_columns, predictions.squeeze().tolist()))
+            return predicted_emotions
+        except Exception as e:
+            print(f"Error using RoBERTa model for prediction: {e}")
+            print("Falling back to enhanced linguistic analysis for this request")
     
-    def detect_emotions(text):
-        """Simple keyword-based emotion detection as fallback"""
-        text = text.lower()
-        emotions = {
-            "anger": any(word in text for word in ["angry", "mad", "furious", "rage", "broke", "hate"]),
-            "fear": any(word in text for word in ["scared", "afraid", "fear", "worried", "nervous", "dark"]),
-            "sadness": any(word in text for word in ["sad", "unhappy", "cry", "lost", "miss", "alone"]),
-            "joy": any(word in text for word in ["happy", "joy", "glad", "excited", "fun", "smile"])
+    # Enhanced fallback detection using linguistic analysis
+    return advanced_emotion_detection(text)
+
+def advanced_emotion_detection(text):
+    """
+    Advanced emotion detection using linguistic features:
+    - Expanded emotional vocabulary with intensity levels
+    - Negation handling
+    - Contextual analysis
+    - Emphasis detection (punctuation, capitalization)
+    """
+    # Normalize text
+    text = text.lower()
+    
+    # Detect emphasis patterns (exclamation marks, question marks, etc.)
+    emphasis_multiplier = 1.0
+    for pattern in EMPHASIS_PATTERNS:
+        if re.search(pattern, text):
+            emphasis_multiplier = 1.2
+            break
+    
+    # Initialize emotion scores
+    emotion_scores = {
+        "anger": 0.0,
+        "fear": 0.0,
+        "sadness": 0.0,
+        "joy": 0.0
+    }
+    
+    # Split into sentences to better handle negation and context
+    sentences = re.split(r'[.!?]+', text)
+    
+    for sentence in sentences:
+        # Split into words
+        words = re.findall(r'\b\w+\b', sentence)
+        
+        # Check for negation words
+        has_negation = any(neg in words for neg in NEGATION_WORDS)
+        
+        # Check for intensifiers
+        intensifier_present = any(intensifier in words for intensifier in INTENSIFIERS)
+        intensity_multiplier = 1.3 if intensifier_present else 1.0
+        
+        # Analyze each emotion
+        for emotion, levels in EMOTION_KEYWORDS.items():
+            local_score = 0.0
+            
+            # Check high intensity words
+            for word in levels["high"]:
+                if word in sentence:
+                    local_score += 3.0
+            
+            # Check medium intensity words
+            for word in levels["medium"]:
+                if word in sentence:
+                    local_score += 2.0
+            
+            # Check low intensity words
+            for word in levels["low"]:
+                if word in sentence:
+                    local_score += 1.0
+            
+            # Apply modifiers (negation, intensity)
+            if has_negation:
+                # If negation is present, reverse the emotion (e.g., "not happy" -> sadness)
+                if emotion == "joy":
+                    emotion_scores["sadness"] += local_score * 0.7  # Add to opposite emotion
+                    local_score *= 0.2  # Reduce original emotion
+                elif emotion == "sadness":
+                    emotion_scores["joy"] += local_score * 0.5  # Add to opposite emotion
+                    local_score *= 0.2  # Reduce original emotion
+                else:
+                    local_score *= 0.3  # Just reduce for anger/fear
+            
+            # Apply intensity multiplier from any intensifiers
+            local_score *= intensity_multiplier
+            
+            # Add the score to the emotion
+            emotion_scores[emotion] += local_score
+    
+    # Apply emphasis multiplier (for exclamations, etc)
+    for emotion in emotion_scores:
+        emotion_scores[emotion] *= emphasis_multiplier
+    
+    # Normalize scores to a 0-1 range if any emotions were detected
+    max_score = max(emotion_scores.values())
+    if max_score > 0:
+        threshold = max_score * 0.3  # Dynamic threshold as 30% of max score
+        
+        # Convert to binary output based on threshold
+        binary_emotions = {
+            emotion: score >= threshold
+            for emotion, score in emotion_scores.items()
         }
-        return emotions
+        
+        # If no emotions reached threshold, ensure at least the max emotion is True
+        if not any(binary_emotions.values()) and max_score > 0:
+            max_emotion = max(emotion_scores, key=emotion_scores.get)
+            binary_emotions[max_emotion] = True
+        
+        return binary_emotions
+    else:
+        # Default to all false if no emotions were detected
+        return {emotion: False for emotion in emotion_scores}
 
 # Function to generate image with Replicate API
 def generate_image_with_replicate(prompt, negative_prompt="low quality, blurry, distorted", timeout=90):
@@ -215,7 +362,7 @@ def analyze_text():
         if not text:
             return jsonify({'error': 'No text provided'}), 400
         
-        # Use RoBERTa model to detect emotions
+        # Detect emotions
         emotions = detect_emotions(text)
         print(f"Detected emotions: {emotions}")
         
