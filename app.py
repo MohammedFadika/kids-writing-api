@@ -1,5 +1,4 @@
 import os
-import shutil
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import base64
@@ -21,20 +20,9 @@ CORS(app, resources={r"/api/*": {"origins": "*", "allow_headers": ["Content-Type
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 print(f"Base directory: {BASE_DIR}")
 
-# Setup emotion model path
-# Check if we're running on Render (environment variable set by Render)
-is_on_render = os.environ.get('RENDER') == 'true'
-
-if is_on_render:
-    # On Render, use simple keyword detection
-    print("Running on Render, using keyword-based emotion detection")
-    EMOTION_MODEL_PATH = None
-    use_keyword_detection = True
-else:
-    # Locally, use the model from fyp code directory
-    EMOTION_MODEL_PATH = os.path.join(BASE_DIR, "../fyp code/emotion_model")
-    print(f"Running locally, emotion model path: {EMOTION_MODEL_PATH}")
-    use_keyword_detection = False
+# Hugging Face model ID for the emotion detection model
+EMOTION_MODEL_ID = "Mohvmmed111/kidswrittingemodetect"
+print(f"Using emotion model from Hugging Face Hub: {EMOTION_MODEL_ID}")
 
 # Create sample content
 SAMPLE_IMAGES = {}
@@ -74,32 +62,28 @@ def create_test_file():
     with open(os.path.join(BASE_DIR, "sad_image.txt"), "w") as f:
         f.write("This is a sad image placeholder")
 
-# Load the RoBERTa model for emotion detection if not using keyword detection
-if not use_keyword_detection and EMOTION_MODEL_PATH is not None:
-    try:
-        print("Loading RoBERTa model for emotion detection...")
-        emotion_model = RobertaForSequenceClassification.from_pretrained(EMOTION_MODEL_PATH)
-        emotion_tokenizer = RobertaTokenizer.from_pretrained(EMOTION_MODEL_PATH)
-        print("RoBERTa model loaded successfully!")
+# Load the RoBERTa model for emotion detection
+try:
+    print("Loading RoBERTa model for emotion detection from Hugging Face Hub...")
+    emotion_model = RobertaForSequenceClassification.from_pretrained(EMOTION_MODEL_ID)
+    emotion_tokenizer = RobertaTokenizer.from_pretrained(EMOTION_MODEL_ID)
+    print("RoBERTa model loaded successfully!")
+    
+    def detect_emotions(text):
+        """Detect emotions using the fine-tuned RoBERTa model"""
+        encoding = emotion_tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
+        with torch.no_grad():
+            output = emotion_model(**encoding)
+        predictions = torch.sigmoid(output.logits)
+        predictions = predictions > 0.5  # Threshold to get 0 or 1 for each emotion
+        emotion_columns = ["anger", "fear", "sadness", "joy"]  # The emotions our model was trained on
+        predicted_emotions = dict(zip(emotion_columns, predictions.squeeze().tolist()))
+        return predicted_emotions
         
-        def detect_emotions(text):
-            """Detect emotions using the fine-tuned RoBERTa model"""
-            encoding = emotion_tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
-            with torch.no_grad():
-                output = emotion_model(**encoding)
-            predictions = torch.sigmoid(output.logits)
-            predictions = predictions > 0.5  # Threshold to get 0 or 1 for each emotion
-            emotion_columns = ["anger", "fear", "sadness", "joy"]  # The emotions our model was trained on
-            predicted_emotions = dict(zip(emotion_columns, predictions.squeeze().tolist()))
-            return predicted_emotions
-    except Exception as e:
-        print(f"Error loading RoBERTa model: {e}")
-        print("Falling back to simple keyword-based emotion detection")
-        use_keyword_detection = True
-
-# Define keyword-based emotion detection if needed
-if use_keyword_detection:
-    print("Using keyword-based emotion detection")
+except Exception as e:
+    print(f"Error loading RoBERTa model from Hugging Face Hub: {e}")
+    print("Falling back to simple keyword-based emotion detection")
+    
     def detect_emotions(text):
         """Simple keyword-based emotion detection as fallback"""
         text = text.lower()
