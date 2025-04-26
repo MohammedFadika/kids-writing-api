@@ -2,20 +2,39 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
-dist/
+*.so
+.Python
+env/
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 *.egg-info/
+.installed.cfg
+*.egg
 
-# Environments
+# Virtual Environments
+venv/
 .env
 .venv
-env/
-venv/
 ENV/
-env.bak/
-venv.bak/
+
+# Images and large files
+*.png
+*.jpg
+*.jpeg
+generated_image_*
+placeholder_image_*
+
+# Emotion model - exclude large model files
+emotion_model/
 
 # VS Code
 .vscode/
