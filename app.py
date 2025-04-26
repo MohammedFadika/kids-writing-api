@@ -64,9 +64,10 @@ EMPHASIS_PATTERNS = [r'!+', r'\?!+', r'\?{2,}', r'\.{3,}', r'[A-Z]{2,}']
 # Story elements to extract for personalized feedback
 STORY_ELEMENTS = {
     "characters": [
-        r'\b(?:my|with|and|to|from)\s+([a-z]+\s+)?friend(?:s)?\b',
-        r'\b(?:my|with)\s+(?:mom|mother|dad|father|brother|sister|cousin|aunt|uncle|grandma|grandpa|grandmother|grandfather|family|teacher|classmate|pet|dog|cat)\b',
-        r'\bwe\b'
+        r'\b(?:with|and|to|from)?\s+my\s+friends?\b',
+        r'\b(?:with|and|to|from)?\s+my\s+(?:mom|mother|dad|father|sister|brother|sibling|cousin|aunt|uncle|grandma|grandpa|pet|dog|cat|teacher|class|classmate|family)\b',
+        r'\bmy\s+(?:friend|mom|mother|dad|father|sister|brother|sibling|cousin|aunt|uncle|grandma|grandpa|pet|dog|cat|teacher|class|classmate|family)s?\b',
+        r'\b(?:our|the)\s+(?:friend|family|class|group|team)s?\b'
     ],
     "activities": [
         r'\b(?:play(?:ing|ed)?|danc(?:ing|ed)?|sing(?:ing)?|read(?:ing)?|watch(?:ing|ed)?|saw|see(?:ing)?|went|go(?:ing)?|visit(?:ing|ed)?)\b',
@@ -413,19 +414,27 @@ def extract_story_elements(text):
     for pattern in STORY_ELEMENTS["characters"]:
         matches = re.findall(pattern, text_lower)
         if matches:
-            elements["characters"].update(matches)
+            # Store complete matches, not just capturing groups
+            for match in matches:
+                # Ensure we get the entire phrase
+                match_text = match.strip()
+                # Only add phrases that are complete (not just "my" alone)
+                if len(match_text) > 3 and not match_text == "my":
+                    elements["characters"].add(match_text)
     
     # Extract activities
     for pattern in STORY_ELEMENTS["activities"]:
         matches = re.findall(pattern, text_lower)
         if matches:
-            elements["activities"].update(matches)
+            for match in matches:
+                elements["activities"].add(match.strip())
     
     # Extract objects
     for pattern in STORY_ELEMENTS["objects"]:
         matches = re.findall(pattern, text_lower)
         if matches:
-            elements["objects"].update(matches)
+            for match in matches:
+                elements["objects"].add(match.strip())
     
     # Extract emotion words
     for emotion, levels in STORY_ELEMENTS["feelings"].items():
@@ -468,19 +477,27 @@ def generate_personalized_feedback(text, emotions, story_elements):
         
         # Mention characters if available
         if story_elements["characters"]:
-            # Clean up character mentions
-            characters = [c.strip() for c in story_elements["characters"] if len(c.strip()) > 0]
+            # Filter out empty or very short matches
+            characters = [c for c in story_elements["characters"] if len(c) > 3]
             if characters:
                 character_text = random.choice(characters)
-                personalized_prefix = f"I noticed you wrote about {character_text}. "
+                
+                # Check if "my" is in the character text and add appropriate wording
+                if character_text.startswith("my "):
+                    personalized_prefix = f"I noticed you wrote about {character_text}. "
+                elif character_text.startswith(("with my ", "and my ", "to my ", "from my ")):
+                    cleaned_text = character_text.split("my ", 1)[1]
+                    personalized_prefix = f"I noticed you wrote about your {cleaned_text}. "
+                else:
+                    personalized_prefix = f"I noticed you mentioned {character_text}. "
         
         # Mention activities if available and not already mentioned characters
         elif story_elements["activities"]:
-            # Clean up activity mentions
-            activities = [a.strip() for a in story_elements["activities"] if len(a.strip()) > 0]
+            # Filter out empty or very short matches
+            activities = [a for a in story_elements["activities"] if len(a) > 3]
             if activities:
                 activity_text = random.choice(activities)
-                personalized_prefix = f"I see you described {activity_text}. "
+                personalized_prefix = f"I see you wrote about {activity_text}. "
         
         # Add the personalized prefix if we created one
         if personalized_prefix:
