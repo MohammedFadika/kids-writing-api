@@ -8,6 +8,8 @@ from PIL import Image
 import traceback
 import requests
 from io import BytesIO
+import torch
+from transformers import RobertaForSequenceClassification, RobertaTokenizer
 
 app = Flask(__name__)
 
@@ -17,6 +19,10 @@ CORS(app, resources={r"/api/*": {"origins": "*", "allow_headers": ["Content-Type
 # Base directory for images
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 print(f"Base directory: {BASE_DIR}")
+
+# Get the path to the emotion model
+EMOTION_MODEL_PATH = os.path.join(BASE_DIR, "../fyp code/emotion_model")
+print(f"Emotion model path: {EMOTION_MODEL_PATH}")
 
 # Create sample content
 SAMPLE_IMAGES = {}
@@ -55,6 +61,39 @@ def create_test_file():
     
     with open(os.path.join(BASE_DIR, "sad_image.txt"), "w") as f:
         f.write("This is a sad image placeholder")
+
+# Load the RoBERTa model for emotion detection
+try:
+    print("Loading RoBERTa model for emotion detection...")
+    emotion_model = RobertaForSequenceClassification.from_pretrained(EMOTION_MODEL_PATH)
+    emotion_tokenizer = RobertaTokenizer.from_pretrained(EMOTION_MODEL_PATH)
+    print("RoBERTa model loaded successfully!")
+    
+    def detect_emotions(text):
+        """Detect emotions using the fine-tuned RoBERTa model"""
+        encoding = emotion_tokenizer(text, truncation=True, padding=True, max_length=512, return_tensors='pt')
+        with torch.no_grad():
+            output = emotion_model(**encoding)
+        predictions = torch.sigmoid(output.logits)
+        predictions = predictions > 0.5  # Threshold to get 0 or 1 for each emotion
+        emotion_columns = ["anger", "fear", "sadness", "joy"]  # The emotions our model was trained on
+        predicted_emotions = dict(zip(emotion_columns, predictions.squeeze().tolist()))
+        return predicted_emotions
+        
+except Exception as e:
+    print(f"Error loading RoBERTa model: {e}")
+    print("Falling back to simple keyword-based emotion detection")
+    
+    def detect_emotions(text):
+        """Simple keyword-based emotion detection as fallback"""
+        text = text.lower()
+        emotions = {
+            "anger": any(word in text for word in ["angry", "mad", "furious", "rage", "broke", "hate"]),
+            "fear": any(word in text for word in ["scared", "afraid", "fear", "worried", "nervous", "dark"]),
+            "sadness": any(word in text for word in ["sad", "unhappy", "cry", "lost", "miss", "alone"]),
+            "joy": any(word in text for word in ["happy", "joy", "glad", "excited", "fun", "smile"])
+        }
+        return emotions
 
 # Function to generate image with Replicate API
 def generate_image_with_replicate(prompt, negative_prompt="low quality, blurry, distorted", timeout=90):
@@ -176,17 +215,15 @@ def analyze_text():
         if not text:
             return jsonify({'error': 'No text provided'}), 400
         
-        # Simple text-based emotion detection
-        is_happy = any(word in text.lower() for word in ["happy", "joy", "glad", "excited", "fun", "smile"])
-        is_sad = any(word in text.lower() for word in ["sad", "unhappy", "cry", "lost", "miss", "alone"])
+        # Use RoBERTa model to detect emotions
+        emotions = detect_emotions(text)
+        print(f"Detected emotions: {emotions}")
         
-        # Create emotion object
-        emotions = {
-            'joy': is_happy,
-            'sadness': is_sad,
-            'anger': False,
-            'fear': False
-        }
+        # Get the dominant emotions
+        is_happy = emotions.get('joy', False)
+        is_sad = emotions.get('sadness', False)
+        is_angry = emotions.get('anger', False)
+        is_fearful = emotions.get('fear', False)
         
         # Generate feedback based on emotions
         if is_happy:
@@ -195,6 +232,12 @@ def analyze_text():
         elif is_sad:
             feedback = ("I can feel the sadness in your writing. You've done a good job expressing this emotion. To make your writing even more powerful, try describing how sadness feels in your body. Did your shoulders slump? Did you feel heavy?", True)
             prompt = "a child looking out a rainy window, blue tones, gentle rain, melancholic mood, children's book illustration style"
+        elif is_angry:
+            feedback = ("I can sense the anger in your writing. You've done a good job expressing this emotion. To make your writing even more impactful, try describing how anger feels in your body. Did your face get hot? Did your heart beat faster?", True)
+            prompt = "a child with furrowed brows and crossed arms, warm orange and red tones, expressive posture, children's book illustration style"
+        elif is_fearful:
+            feedback = ("I can feel the fear in your writing. You've done a good job expressing this emotion. To make your writing even more compelling, try describing how fear feels in your body. Did you tremble? Did you feel cold?", True)
+            prompt = "a child hiding under blankets with a flashlight, dark blue shadows, mysterious atmosphere, children's book illustration style"
         else:
             feedback = ("You've written a nice piece! To make it more engaging, try adding details about how you felt. What emotions were you experiencing? How did those emotions feel in your body?", True)
             prompt = "a thoughtful child writing in a journal, calm scene, neutral colors, children's book illustration style"
@@ -217,8 +260,18 @@ def analyze_text():
             image_filename = f"placeholder_image_{int(time.time())}.png"
             image_path = os.path.join(BASE_DIR, image_filename)
             
-            # Create a simple image (blue for sad, yellow for happy, green for neutral)
-            color = (255, 255, 0) if is_happy else (0, 0, 255) if is_sad else (0, 255, 0)
+            # Create a simple image with color based on emotion
+            if is_happy:
+                color = (255, 255, 0)  # Yellow for happy
+            elif is_sad:
+                color = (0, 0, 255)    # Blue for sad
+            elif is_angry:
+                color = (255, 0, 0)    # Red for angry
+            elif is_fearful:
+                color = (128, 0, 128)  # Purple for fearful
+            else:
+                color = (0, 255, 0)    # Green for neutral
+                
             img = Image.new('RGB', (512, 512), color=color)
             img.save(image_path)
         
@@ -248,16 +301,9 @@ if __name__ == '__main__':
     # Create our test files and sample responses
     create_test_file()
     
-    # Get port from environment variable or default to 5001
-    port = int(os.environ.get('PORT', 5001))
+    # Get port from environment variable or use default
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("DEBUG", "False").lower() == "true"
     
-    # In production, the host should be '0.0.0.0' to listen on all interfaces
-    host = '0.0.0.0'
-    
-    print(f"Starting Flask server at http://{host}:{port}")
-    print(f"Base directory: {BASE_DIR}")
-    
-    # In production (Render), Flask's debug mode should be off
-    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    
-    app.run(debug=debug, port=port, host=host) 
+    # Run the app
+    app.run(host="0.0.0.0", port=port, debug=debug) 
