@@ -6,6 +6,8 @@ import json
 import time
 from PIL import Image
 import traceback
+import requests
+from io import BytesIO
 
 app = Flask(__name__)
 
@@ -54,6 +56,112 @@ def create_test_file():
     with open(os.path.join(BASE_DIR, "sad_image.txt"), "w") as f:
         f.write("This is a sad image placeholder")
 
+# Function to generate image with Replicate API
+def generate_image_with_replicate(prompt, negative_prompt="low quality, blurry, distorted", timeout=90):
+    """Generate an image using Replicate's API for Stable Diffusion"""
+    
+    # Get token from environment
+    api_token = os.environ.get('REPLICATE_API_TOKEN')
+    if not api_token:
+        print("No Replicate API token found. Falling back to placeholder image.")
+        return None
+    
+    # Set up headers
+    headers = {
+        "Authorization": f"Token {api_token}",
+        "Content-Type": "application/json"
+    }
+    
+    # Stable Diffusion endpoint
+    api_url = "https://api.replicate.com/v1/predictions"
+    
+    # Using Stable Diffusion v1.5
+    model_version = "db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf"
+    
+    print(f"Using Replicate API for image generation with prompt: {prompt}")
+    
+    # Prepare payload for Replicate
+    payload = {
+        "version": model_version,
+        "input": {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "num_inference_steps": 20,
+            "guidance_scale": 7.5,
+            "width": 512,
+            "height": 512
+        }
+    }
+    
+    try:
+        # Submit the request
+        print("Submitting request to Replicate API...")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        
+        # Check response
+        if response.status_code in [200, 201]:
+            print("✅ Request successful! Prediction started.")
+            prediction = response.json()
+            prediction_id = prediction.get("id")
+            
+            if not prediction_id:
+                print("No prediction ID returned")
+                return None
+            
+            # Poll for the result
+            print(f"Prediction ID: {prediction_id}")
+            print("Waiting for image generation to complete...")
+            get_url = f"{api_url}/{prediction_id}"
+            
+            # Wait for the prediction to complete with timeout
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                time.sleep(2)
+                poll_response = requests.get(get_url, headers=headers)
+                
+                if poll_response.status_code != 200:
+                    print(f"Error polling prediction: {poll_response.status_code}")
+                    print(f"Response: {poll_response.text}")
+                    break
+                    
+                prediction_status = poll_response.json()
+                status = prediction_status.get("status")
+                
+                print(f"Status: {status}")
+                
+                if status == "succeeded":
+                    print("✅ Image generation complete!")
+                    # Get the image URL
+                    output_url = prediction_status.get("output")
+                    
+                    if output_url:
+                        # If output is a list, take the first item
+                        if isinstance(output_url, list) and len(output_url) > 0:
+                            output_url = output_url[0]
+                            
+                        print(f"Image URL: {output_url}")
+                        
+                        # Download the image
+                        image_response = requests.get(output_url)
+                        if image_response.status_code == 200:
+                            return image_response.content
+                    break
+                elif status == "failed":
+                    print(f"❌ Image generation failed: {prediction_status.get('error')}")
+                    break
+            
+            # If we get here, the prediction timed out or failed
+            print("Image generation did not complete in the expected time")
+            return None
+        else:
+            print(f"Error: API returned status code {response.status_code}")
+            print(f"Response: {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error during image generation: {e}")
+        return None
+
 @app.route('/api/test', methods=['GET'])
 def test_api():
     return jsonify({'status': 'API is working', 'version': '1.0'}), 200
@@ -67,9 +175,6 @@ def analyze_text():
         
         if not text:
             return jsonify({'error': 'No text provided'}), 400
-        
-        # Check if we're in production environment (Render)
-        is_production = os.environ.get('RENDER_ENVIRONMENT') == 'true'
         
         # Simple text-based emotion detection
         is_happy = any(word in text.lower() for word in ["happy", "joy", "glad", "excited", "fun", "smile"])
@@ -86,41 +191,36 @@ def analyze_text():
         # Generate feedback based on emotions
         if is_happy:
             feedback = ("I love how you expressed happiness in your writing! To make your story even more engaging, try describing what made you happy and how that happiness felt in your body. Did you smile, laugh, or jump with excitement?", True)
+            prompt = "a happy child playing in a sunny park, joyful colors, bright atmosphere, children's book illustration style"
         elif is_sad:
             feedback = ("I can feel the sadness in your writing. You've done a good job expressing this emotion. To make your writing even more powerful, try describing how sadness feels in your body. Did your shoulders slump? Did you feel heavy?", True)
+            prompt = "a child looking out a rainy window, blue tones, gentle rain, melancholic mood, children's book illustration style"
         else:
             feedback = ("You've written a nice piece! To make it more engaging, try adding details about how you felt. What emotions were you experiencing? How did those emotions feel in your body?", True)
+            prompt = "a thoughtful child writing in a journal, calm scene, neutral colors, children's book illustration style"
         
-        # For production environment, use placeholder image instead of trying to generate one
-        if is_production:
-            # Create a simple colored rectangle as placeholder
+        # Generate image with Replicate
+        image_data = generate_image_with_replicate(prompt)
+        
+        if image_data:
+            # Save the image from binary data
+            image_filename = f"generated_image_{int(time.time())}.png"
+            image_path = os.path.join(BASE_DIR, image_filename)
+            
+            with open(image_path, 'wb') as f:
+                f.write(image_data)
+            
+            print(f"Saved generated image to {image_path}")
+        else:
+            # Fallback to placeholder if generation failed
+            print("Image generation failed, using placeholder")
             image_filename = f"placeholder_image_{int(time.time())}.png"
             image_path = os.path.join(BASE_DIR, image_filename)
             
             # Create a simple image (blue for sad, yellow for happy, green for neutral)
             color = (255, 255, 0) if is_happy else (0, 0, 255) if is_sad else (0, 255, 0)
-            img = Image.new('RGB', (500, 300), color=color)
+            img = Image.new('RGB', (512, 512), color=color)
             img.save(image_path)
-        else:
-            # Try to use Stable Diffusion locally if available
-            try:
-                # Code to generate image with Stable Diffusion would go here
-                # For simplicity, we'll use the same placeholder approach
-                image_filename = f"placeholder_image_{int(time.time())}.png"
-                image_path = os.path.join(BASE_DIR, image_filename)
-                
-                color = (255, 255, 0) if is_happy else (0, 0, 255) if is_sad else (0, 255, 0)
-                img = Image.new('RGB', (500, 300), color=color)
-                img.save(image_path)
-            except Exception as e:
-                print(f"Local image generation error: {e}")
-                # Fallback to placeholder
-                image_filename = f"placeholder_image_{int(time.time())}.png"
-                image_path = os.path.join(BASE_DIR, image_filename)
-                
-                color = (255, 255, 0) if is_happy else (0, 0, 255) if is_sad else (0, 255, 0)
-                img = Image.new('RGB', (500, 300), color=color)
-                img.save(image_path)
         
         response = {
             'emotions': emotions,
